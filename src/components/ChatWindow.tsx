@@ -101,7 +101,7 @@ export default function ChatWindow({ messages, onSend, isLoading }: ChatWindowPr
                     </div>
                 </div>
                 <div style={{ padding: '0.4rem 0.8rem', borderRadius: '4px', border: '1px solid #222', background: '#0a0a0a', fontSize: '0.7rem', color: '#777', fontWeight: 700, letterSpacing: '0.05em' }}>
-                    GEMINI 2.5 + LLAMA 3.3
+                    GPT-OSS 120B + LLAMA 3.3
                 </div>
             </header>
 

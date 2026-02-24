@@ -4,13 +4,9 @@ import React, { useState } from 'react';
 import ChatWindow from '@/components/ChatWindow';
 import DiscussionPanel from '@/components/DiscussionPanel';
 import { Groq } from 'groq-sdk';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // --- CONFIGURATION ---
-// IMPORTANT: In a production app, these should NEVER be exposed in the frontend.
-// They are moved here only to allow hosting on static platforms like GitHub Pages.
 const GROQ_API_KEY = process.env.NEXT_PUBLIC_GROQ_API_KEY || "";
-const GEMINI_API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || "";
 
 interface Message {
   id: string;
@@ -36,16 +32,13 @@ export default function Home() {
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    setDiscussion([]); // Reset discussion for new query
+    setDiscussion([]);
     setIsLoading(true);
 
     try {
-      // Setup Clients directly in frontend
       const groq = new Groq({ apiKey: GROQ_API_KEY, dangerouslyAllowBrowser: true });
-      const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-      const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
 
-      const history = messages.slice(-10); // Last 10 messages for context
+      const history = messages.slice(-10);
       const conversationContext = history.length > 0
         ? `\nCONVERSATION HISTORY:\n${history.map((h: any) => `${h.role.toUpperCase()}: ${h.content}`).join('\n')}\n`
         : '';
@@ -54,8 +47,8 @@ export default function Home() {
       let finalResponse = '';
       let discussionEnded = false;
 
-      // Initial prompt for Gemini
-      let currentPrompt = `You are "Gemini Voyager", one half of TurboStack. 
+      // Initial prompt for GPT-OSS (Agent A)
+      let currentPrompt = `You are "GPT Voyager", one half of TurboStack. 
       ${conversationContext}
       User Query: "${text}".
       RULES:
@@ -66,56 +59,60 @@ export default function Home() {
       5. STRICTLY FORBIDDEN: Do not roleplay the entire conversation yourself. Stop after your first paragraph of analysis.`;
 
       for (let i = 0; i < 5; i++) {
-        // --- Gemini Turn ---
-        const geminiResult = await geminiModel.generateContent(currentPrompt);
-        const geminiText = geminiResult.response.text();
-        localDiscussion.push({ role: 'gemini', content: geminiText });
+        // --- GPT-OSS Turn (Agent A) ---
+        const gptResult = await groq.chat.completions.create({
+          messages: [{ role: 'user', content: currentPrompt }],
+          model: 'openai/gpt-oss-120b',
+        });
+
+        const gptText = gptResult.choices[0]?.message?.content || '';
+        localDiscussion.push({ role: 'gemini', content: gptText }); // reuse 'gemini' role for UI styling
         setDiscussion([...localDiscussion]);
 
-        if (geminiText.includes('<terminate>')) {
-          finalResponse = geminiText.split('<terminate>')[1]?.split('</terminate>')[0] || "Resolution reached.";
+        if (gptText.includes('<terminate>')) {
+          finalResponse = gptText.split('<terminate>')[1]?.split('</terminate>')[0] || "Resolution reached.";
           discussionEnded = true;
           break;
         }
 
-        // --- Groq Turn ---
-        const groqPrompt = `You are "Groq Llama", the second half of TurboStack. 
+        // --- Llama Turn (Agent B) ---
+        const llamaPrompt = `You are "Groq Llama", the second half of TurboStack. 
           ${conversationContext}
           User query: "${text}".
-          Gemini's current analysis: "${geminiText}".
+          GPT Voyager's current analysis: "${gptText}".
           
           TASK:
-          1. Critique or augment Gemini's analysis. 
+          1. Critique or augment GPT Voyager's analysis. 
           2. If you are ready to provide a final solution, wrap the actual content between <terminate> and </terminate> tags (e.g., <terminate>The answer is...</terminate>).
           3. If you disagree, explain why and suggest a better approach.
           
           Turn: ${i + 1}/5.`;
 
-        const groqResult = await groq.chat.completions.create({
-          messages: [{ role: 'user', content: groqPrompt }],
+        const llamaResult = await groq.chat.completions.create({
+          messages: [{ role: 'user', content: llamaPrompt }],
           model: 'llama-3.3-70b-versatile',
         });
 
-        const groqText = groqResult.choices[0]?.message?.content || '';
-        localDiscussion.push({ role: 'groq', content: groqText });
+        const llamaText = llamaResult.choices[0]?.message?.content || '';
+        localDiscussion.push({ role: 'groq', content: llamaText });
         setDiscussion([...localDiscussion]);
 
-        if (groqText.includes('<terminate>')) {
-          finalResponse = groqText.split('<terminate>')[1]?.split('</terminate>')[0] || "Resolution reached.";
+        if (llamaText.includes('<terminate>')) {
+          finalResponse = llamaText.split('<terminate>')[1]?.split('</terminate>')[0] || "Resolution reached.";
           discussionEnded = true;
           break;
         }
 
-        // Update currentPrompt for Gemini's next turn
+        // Update prompt for GPT-OSS's next turn
         currentPrompt = `Iteration: ${i + 1}/5. 
-          Groq Llama said: "${groqText}".
+          Groq Llama said: "${llamaText}".
           
           CRITICAL: 
           1. Analyze Groq's input. 
           2. If you both agree, provide the final synthesized response inside <terminate>...</terminate> tags.
           3. If you disagree, argue your point or propose a synthesis.
           
-          WARNING: Do NOT roleplay Groq. ONLY provide YOUR response. Do not use placeholders like "DETAILED_FINAL_ANSWER", write the actual final response for the user.`;
+          WARNING: Do NOT roleplay Groq. ONLY provide YOUR response. Do not use placeholders, write the actual final response for the user.`;
       }
 
       if (!discussionEnded) {
@@ -134,7 +131,7 @@ export default function Home() {
       setMessages((prev) => [...prev, assistantMessage]);
 
     } catch (error: any) {
-      console.error('Failed to coordination:', error);
+      console.error('Failed coordination:', error);
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',

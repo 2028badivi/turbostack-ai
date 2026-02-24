@@ -60,10 +60,10 @@ export default function DiscussionPanel({ discussion, isThinking }: DiscussionPa
                                     fontSize: '0.65rem',
                                     fontWeight: 900
                                 }}>
-                                    {item.role === 'gemini' ? 'G' : 'L'}
+                                    {item.role === 'gemini' ? 'O' : 'L'}
                                 </div>
                                 <span style={{ fontSize: '0.7rem', fontWeight: 800, color: '#777', letterSpacing: '0.05em' }}>
-                                    {item.role === 'gemini' ? 'GEMINI VOYAGER' : 'GROQ LLAMA'}
+                                    {item.role === 'gemini' ? 'GPT VOYAGER' : 'GROQ LLAMA'}
                                 </span>
                             </div>
                             <div style={{ fontSize: '0.875rem', lineHeight: '1.7', color: '#bbb' }}>
