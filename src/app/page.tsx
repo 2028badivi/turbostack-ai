@@ -10,10 +10,10 @@ const GROQ_API_KEY = process.env.NEXT_PUBLIC_GROQ_API_KEY || "";
 
 // Agent definitions
 const AGENTS = [
-  { id: 'gpt' as const, name: 'GPT Voyager', model: 'openai/gpt-oss-120b' },
-  { id: 'llama' as const, name: 'Groq Llama', model: 'llama-3.3-70b-versatile' },
+  { id: 'gpt' as const, name: 'GPT', model: 'openai/gpt-oss-120b' },
+  { id: 'llama' as const, name: 'Llama', model: 'llama-3.3-70b-versatile' },
   { id: 'kimi' as const, name: 'Kimi', model: 'moonshotai/kimi-k2-instruct-0905' },
-  { id: 'scout' as const, name: 'Llama Scout', model: 'meta-llama/llama-4-scout-17b-16e-instruct' },
+  { id: 'scout' as const, name: 'Scout', model: 'meta-llama/llama-4-scout-17b-16e-instruct' },
 ];
 
 type AgentRole = typeof AGENTS[number]['id'];
