@@ -8,6 +8,16 @@ import { Groq } from 'groq-sdk';
 // --- CONFIGURATION ---
 const GROQ_API_KEY = process.env.NEXT_PUBLIC_GROQ_API_KEY || "";
 
+// Agent definitions
+const AGENTS = [
+  { id: 'gpt' as const, name: 'GPT Voyager', model: 'openai/gpt-oss-120b' },
+  { id: 'llama' as const, name: 'Groq Llama', model: 'llama-3.3-70b-versatile' },
+  { id: 'kimi' as const, name: 'Kimi', model: 'moonshotai/kimi-k2-instruct-0905' },
+  { id: 'scout' as const, name: 'Llama Scout', model: 'meta-llama/llama-4-scout-17b-16e-instruct' },
+];
+
+type AgentRole = typeof AGENTS[number]['id'];
+
 // Helper: check if a response has a VALID terminate block (both open AND close tags)
 function hasValidTerminate(text: string): boolean {
   return text.includes('<terminate>') && text.includes('</terminate>');
@@ -29,14 +39,13 @@ function stripTerminateTags(text: string): string {
 
 const TERMINATE_RULES = `
 CRITICAL RULES FOR <terminate> TAGS:
-- If you want the conversation to CONTINUE, do NOT include "<terminate>" anywhere in your message. Not even as an example.
+- If you want the conversation to CONTINUE, do NOT include "<terminate>" anywhere. Not even as an example.
 - You may ONLY use <terminate> when you are ready to deliver the FINAL, COMPLETE answer to the user.
-- When you DO use it, you MUST include BOTH the opening <terminate> AND the closing </terminate> tags.
-- The content between the tags must be the FULL, DETAILED answer — not a placeholder.
-- Example of CORRECT usage: <terminate>Here is the complete answer to the user's question...</terminate>
-- WRONG: Using <terminate> without </terminate>
-- WRONG: Using <terminate> in a response that asks a follow-up question
-- WRONG: Using <terminate>DETAILED_RESPONSE</terminate> or any placeholder text
+- When you use it, you MUST include BOTH <terminate> AND </terminate>.
+- The content between tags must be the FULL, DETAILED answer — not a placeholder.
+- Example: <terminate>Here is the complete answer...</terminate>
+- WRONG: <terminate> without </terminate>
+- WRONG: <terminate>DETAILED_RESPONSE</terminate> — write the REAL answer
 `;
 
 interface Message {
@@ -45,8 +54,8 @@ interface Message {
   content: string;
 }
 
-interface DiscussionItem {
-  role: 'gemini' | 'groq';
+export interface DiscussionItem {
+  role: AgentRole;
   content: string;
 }
 
@@ -71,119 +80,102 @@ export default function Home() {
 
       const history = messages.slice(-10);
       const conversationContext = history.length > 0
-        ? `\nCONVERSATION HISTORY:\n${history.map((h: any) => `${h.role.toUpperCase()}: ${h.content}`).join('\n')}\n`
+        ? `\nCONVERSATION HISTORY:\n${history.map((h) => `${h.role.toUpperCase()}: ${h.content}`).join('\n')}\n`
         : '';
 
       const localDiscussion: DiscussionItem[] = [];
       let finalResponse = '';
       let discussionEnded = false;
 
-      // Initial prompt for GPT-OSS (Agent A) — first turn, NEVER terminate
-      let currentPrompt = `You are "GPT Voyager", one half of TurboStack's dual-AI reasoning engine.
-      ${conversationContext}
-      User Query: "${text}".
+      const MAX_ROUNDS = 3; // 3 full rotations × 4 agents = up to 12 turns
+      const totalMaxTurns = MAX_ROUNDS * AGENTS.length;
+      let turnCount = 0;
 
-      THIS IS YOUR FIRST MESSAGE. You are FORBIDDEN from terminating on the first turn.
-      
-      RULES:
-      1. NEVER simulate, fake, or predict Groq Llama's response.
-      2. Provide YOUR initial analysis only. Keep debating until you and Groq Llama converge.
-      3. Do NOT include "<terminate>" in this message under any circumstances.
-      4. Stop after your analysis. Let Groq Llama respond.
-      
-      ${TERMINATE_RULES}`;
+      // Build agent name list for prompts
+      const agentNames = AGENTS.map(a => a.name).join(', ');
 
-      for (let i = 0; i < 5; i++) {
-        // --- GPT-OSS Turn (Agent A) ---
-        const gptResult = await groq.chat.completions.create({
-          messages: [{ role: 'user', content: currentPrompt }],
-          model: 'openai/gpt-oss-120b',
-        });
+      for (let round = 0; round < MAX_ROUNDS && !discussionEnded; round++) {
+        for (let agentIdx = 0; agentIdx < AGENTS.length && !discussionEnded; agentIdx++) {
+          turnCount++;
+          const agent = AGENTS[agentIdx];
+          const isFirstTurn = turnCount === 1;
+          const isLastTurn = turnCount >= totalMaxTurns;
 
-        let gptText = gptResult.choices[0]?.message?.content || '';
+          // Build context from previous discussion turns
+          const prevDiscussion = localDiscussion
+            .slice(-6) // last 6 messages for context window sanity
+            .map(d => {
+              const agentDef = AGENTS.find(a => a.id === d.role);
+              return `${agentDef?.name || d.role}: "${d.content}"`;
+            })
+            .join('\n\n');
 
-        // On turn 0, forcibly strip any terminate tags (it should NEVER terminate first)
-        if (i === 0 && (gptText.includes('<terminate>') || gptText.includes('</terminate>'))) {
-          gptText = stripTerminateTags(gptText);
-        }
+          let prompt: string;
 
-        // Check for malformed terminate (has open but no close) — strip it, keep going
-        if (gptText.includes('<terminate>') && !gptText.includes('</terminate>')) {
-          gptText = stripTerminateTags(gptText);
-        }
+          if (isFirstTurn) {
+            prompt = `You are "${agent.name}", part of TurboStack's multi-AI reasoning engine (${agentNames}).
+            ${conversationContext}
+            User Query: "${text}".
 
-        localDiscussion.push({ role: 'gemini', content: gptText });
-        setDiscussion([...localDiscussion]);
+            THIS IS THE FIRST MESSAGE. You are FORBIDDEN from terminating on the first turn.
+            Provide YOUR initial analysis only. Do NOT include <terminate> tags.
+            Keep it focused and let the other agents respond.
+            
+            ${TERMINATE_RULES}`;
+          } else {
+            prompt = `You are "${agent.name}", part of TurboStack's multi-AI reasoning engine (${agentNames}).
+            ${conversationContext}
+            User Query: "${text}".
+            
+            Discussion so far:
+            ${prevDiscussion}
 
-        // Only accept a VALID terminate (both tags present)
-        if (hasValidTerminate(gptText)) {
-          finalResponse = extractTerminate(gptText);
-          if (finalResponse) {
-            discussionEnded = true;
-            break;
+            Turn ${turnCount}/${totalMaxTurns}.${isLastTurn ? ' THIS IS THE FINAL TURN. You MUST provide the final answer now using <terminate>your complete answer</terminate>.' : ''}
+
+            TASK:
+            1. Build on, critique, or synthesize the other agents' analyses.
+            2. If the group has converged on a strong answer, deliver it with <terminate>complete answer</terminate>.
+            3. If more refinement is needed, provide your perspective — but do NOT use <terminate> if the conversation should continue.
+            
+            Do NOT repeat what others said. Add NEW value or synthesize.
+            ${TERMINATE_RULES}`;
+          }
+
+          const result = await groq.chat.completions.create({
+            messages: [{ role: 'user', content: prompt }],
+            model: agent.model,
+          });
+
+          let responseText = result.choices[0]?.message?.content || '';
+
+          // First turn: forcibly strip any terminate tags
+          if (isFirstTurn && (responseText.includes('<terminate>') || responseText.includes('</terminate>'))) {
+            responseText = stripTerminateTags(responseText);
+          }
+
+          // Malformed terminate (open but no close): strip and keep going
+          if (responseText.includes('<terminate>') && !responseText.includes('</terminate>')) {
+            responseText = stripTerminateTags(responseText);
+          }
+
+          localDiscussion.push({ role: agent.id, content: responseText });
+          setDiscussion([...localDiscussion]);
+
+          // Only accept a VALID terminate (both tags present with real content)
+          if (hasValidTerminate(responseText)) {
+            finalResponse = extractTerminate(responseText);
+            if (finalResponse && finalResponse.length > 10) {
+              discussionEnded = true;
+            }
           }
         }
-
-        // --- Llama Turn (Agent B) ---
-        const isLastTurn = i === 4;
-        const llamaPrompt = `You are "Groq Llama", the second half of TurboStack's dual-AI reasoning engine.
-          ${conversationContext}
-          User query: "${text}".
-          GPT Voyager's current analysis: "${gptText}".
-          
-          Turn: ${i + 1}/5.${isLastTurn ? ' THIS IS THE FINAL TURN. You MUST provide the final answer now using <terminate>...</terminate> tags.' : ''}
-          
-          TASK:
-          1. Critique or augment GPT Voyager's analysis.
-          2. If you both agree and are ready, deliver the final answer using <terminate>your complete answer here</terminate>.
-          3. If you disagree or need more refinement, explain why — but do NOT include <terminate> if the conversation should continue.
-          
-          ${TERMINATE_RULES}`;
-
-        const llamaResult = await groq.chat.completions.create({
-          messages: [{ role: 'user', content: llamaPrompt }],
-          model: 'llama-3.3-70b-versatile',
-        });
-
-        let llamaText = llamaResult.choices[0]?.message?.content || '';
-
-        // Check for malformed terminate — strip it, keep going
-        if (llamaText.includes('<terminate>') && !llamaText.includes('</terminate>')) {
-          llamaText = stripTerminateTags(llamaText);
-        }
-
-        localDiscussion.push({ role: 'groq', content: llamaText });
-        setDiscussion([...localDiscussion]);
-
-        if (hasValidTerminate(llamaText)) {
-          finalResponse = extractTerminate(llamaText);
-          if (finalResponse) {
-            discussionEnded = true;
-            break;
-          }
-        }
-
-        // Update prompt for GPT-OSS's next turn
-        const isNextLastTurn = i + 1 === 4;
-        currentPrompt = `Iteration: ${i + 2}/5. 
-          Groq Llama said: "${llamaText}".
-          ${isNextLastTurn ? 'WARNING: Next turn is the FINAL turn. If you have not reached consensus, you MUST terminate with the best combined answer now.' : ''}
-          
-          TASK:
-          1. Analyze Groq Llama's input and refine the answer.
-          2. If you both agree, provide the final synthesized response using <terminate>your complete answer</terminate>.
-          3. If you still disagree, argue your point — but do NOT include <terminate> if you want the discussion to continue.
-          
-          Do NOT roleplay Groq. ONLY provide YOUR response.
-          ${TERMINATE_RULES}`;
       }
 
-      // Fallback: if 5 full rounds passed with no valid terminate
+      // Fallback: if all rounds passed with no valid terminate
       if (!discussionEnded) {
-        // Try to extract the best answer from the last message
         const lastMsg = localDiscussion[localDiscussion.length - 1].content;
         const cleaned = stripTerminateTags(lastMsg);
-        finalResponse = `**[TurboStack — 5 Round Limit Reached]**\n\nThe agents debated for 5 rounds without a perfect consensus. Here is their best combined synthesis:\n\n---\n\n${cleaned}`;
+        finalResponse = `**[TurboStack — Round Limit Reached]**\n\nThe 4 agents debated for ${turnCount} turns without a perfect consensus. Here is their best combined synthesis:\n\n---\n\n${cleaned}`;
       }
 
       const assistantMessage: Message = {
